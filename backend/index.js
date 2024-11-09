@@ -10,239 +10,271 @@ const User = require('./models/User');
 const Vehicle = require('./models/Vehicle');
 const authMiddleware = require('./middlewares/authMiddleware');
 
-//Initializing the server
+const http = require('http'); // Import HTTP module
+const { Server } = require('socket.io'); // Import Socket.io
+
 const app = express();
 
-//Middleware
+// Middleware
 app.use(cors());
 app.use(express.json());
 app.use(morgan('dev'));
 
-//Basic route
-app.get('/', (req,res) => {
-    res.send('Hello, Fleet Management backend');
+// Basic route
+app.get('/', (req, res) => {
+  res.send('Hello, Fleet Management backend');
 });
 
-//Defining the port 
-const PORT = process.env.PORT || 5000;
+// Create HTTP server
+const server = http.createServer(app);
 
-const startServer = async () => {
-    try {
-        await sequelize.authenticate();
-        console.log('Database connected successfully.');
+// Initialize Socket.io
+const io = new Server(server, {
+  cors: {
+    origin: '*', // Adjust this in production to your frontend URL
+    methods: ['GET', 'POST'],
+  },
+});
 
-        await sequelize.sync();
+// Listen for client connections
+io.on('connection', (socket) => {
+  console.log(`A user connected: ${socket.id}`);
 
-        app.listen(PORT, () => {
-            console.log(`Server is running on port ${PORT}`);
-        });
+  // Handle disconnections
+  socket.on('disconnect', () => {
+    console.log(`User disconnected: ${socket.id}`);
+  });
+});
 
-    } catch (error) {
-        console.error('Unable to connect to the database:', error);
+// User registration route
+app.post('/register', async (req, res) => {
+  const { name, email, password } = req.body;
+
+  if (!name || !email || !password) {
+    return res.status(400).json({ msg: 'Please enter all fields' });
+  }
+
+  try {
+    // Check if user exists 
+    let user = await User.findOne({ where: { email } });
+    if (user) {
+      return res.status(400).json({ msg: 'User already exists' });
     }
-}
 
-startServer();
+    // Hash password
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+    
+    user = await User.create({
+      name,
+      email,
+      password: hashedPassword,
+    });
 
-//User registration route
+    // Create and sign JWT
+    const payload = {
+      user: {
+        id: user.id
+      },
+    };
 
-app.post('/register', async (req,res) => {
-    const {name, email, password} = req.body;
-
-    if (!name || !email || !password){
-        return res.status(400).json({msg: 'Please enter all fields' });
-    }
-
-    try {
-        //check if user exists 
-        let user = await User.findOne( {where: {email}})
-        if (user){
-            return res.status(400).json({msg: 'User already exists'});
-        }
-        //Hash password
-        const salt = await bcrypt.genSalt(10)
-        const hashedPassword = await bcrypt.hash(password,salt)
-        
-        user = await User.create({
-            name,
-            email,
-            password: hashedPassword,
-        });
-
-        //Create and sign JWT
-        const payload = {
-            user: {
-                id: user.id
-            },
-        };
-
-        jwt.sign(
-            payload,
-            process.env.JWT_SECRET,
-            { expiresIn: '1h' },
-            (err, token) => {
-              if (err) throw err;
-              res.json({ token });
-            }
-        );
-    } catch (error) {
-        console.error(error.message);
-        res.status(500).send('Server error');
-    }
+    jwt.sign(
+      payload,
+      process.env.JWT_SECRET,
+      { expiresIn: '1h' },
+      (err, token) => {
+        if (err) throw err;
+        res.json({ token });
+      }
+    );
+  } catch (error) {
+    console.error(error.message);
+    res.status(500).send('Server error');
+  }
 });
 
 // User Login Route
 app.post('/login', async (req, res) => {
-    const { email, password } = req.body;
-  
-    // Simple validation
-    if (!email || !password) {
-      return res.status(400).json({ msg: 'Please enter all fields' });
+  const { email, password } = req.body;
+
+  // Simple validation
+  if (!email || !password) {
+    return res.status(400).json({ msg: 'Please enter all fields' });
+  }
+
+  try {
+    // Check for existing user
+    let user = await User.findOne({ where: { email } });
+    if (!user) {
+      return res.status(400).json({ msg: 'Invalid Credentials' });
     }
-  
-    try {
-      // Check for existing user
-      let user = await User.findOne({ where: { email } });
-      if (!user) {
-        return res.status(400).json({ msg: 'Invalid Credentials' });
-      }
-  
-      // Validate password
-      const isMatch = await bcrypt.compare(password, user.password);
-      if (!isMatch) {
-        return res.status(400).json({ msg: 'Invalid Credentials' });
-      }
-  
-      // Create and sign JWT
-      const payload = {
-        user: {
-          id: user.id,
-        },
-      };
-  
-      jwt.sign(
-        payload,
-        process.env.JWT_SECRET,
-        { expiresIn: '1h' },
-        (err, token) => {
-          if (err) throw err;
-          res.json({ token });
-        }
-      );
-    } catch (err) {
-      console.error(err.message);
-      res.status(500).send('Server error');
+
+    // Validate password
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ msg: 'Invalid Credentials' });
     }
-  });
-  
+
+    // Create and sign JWT
+    const payload = {
+      user: {
+        id: user.id,
+      },
+    };
+
+    jwt.sign(
+      payload,
+      process.env.JWT_SECRET,
+      { expiresIn: '1h' },
+      (err, token) => {
+        if (err) throw err;
+        res.json({ token });
+      }
+    );
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server error');
+  }
+});
+
 // Protected Route Example
 app.get('/protected', authMiddleware, async (req, res) => {
-    try {
-      const user = await User.findByPk(req.user.id, { attributes: ['id', 'name', 'email'] });
-      if (!user) {
-        return res.status(404).json({ msg: 'User not found' });
-      }
-      res.json(user);
-    } catch (err) {
-      console.error(err.message);
-      res.status(500).send('Server error');
+  try {
+    const user = await User.findByPk(req.user.id, { attributes: ['id', 'name', 'email'] });
+    if (!user) {
+      return res.status(404).json({ msg: 'User not found' });
     }
-  });
+    res.json(user);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server error');
+  }
+});
 
-  app.post('/vehicles', authMiddleware, async (req, res) => {
-    const { make, model, year, status, batteryLevel, location } = req.body;
-  
-    // Simple validation
-    if (!make || !model || !year) {
-      return res.status(400).json({ msg: 'Please provide make, model, and year' });
-    }
-  
-    try {
-      const newVehicle = await Vehicle.create({
-        make,
-        model,
-        year,
-        status: status || 'active',
-        batteryLevel: batteryLevel !== undefined ? batteryLevel : 100.0,
-        location: location || null,
-        ownerId: req.user.id, // Associate with the authenticated user
-      });
-  
-      res.status(201).json(newVehicle);
-    } catch (err) {
-      console.error(err.message);
-      res.status(500).send('Server error');
-    }
-  });
+// Vehicle Creation Route
+app.post('/vehicles', authMiddleware, async (req, res) => {
+  const { make, model, year, status, batteryLevel, location } = req.body;
 
-  // Get All Vehicles for Authenticated User
+  // Simple validation
+  if (!make || !model || !year) {
+    return res.status(400).json({ msg: 'Please provide make, model, and year' });
+  }
+
+  try {
+    const newVehicle = await Vehicle.create({
+      make,
+      model,
+      year,
+      status: status || 'active',
+      batteryLevel: batteryLevel !== undefined ? batteryLevel : 100.0,
+      location: location || null,
+      ownerId: req.user.id, // Associate with the authenticated user
+    });
+
+    // Emit 'newVehicle' event to all connected clients
+    io.emit('newVehicle', newVehicle);
+
+    res.status(201).json(newVehicle);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server error');
+  }
+});
+
+// Get All Vehicles for Authenticated User
 app.get('/vehicles', authMiddleware, async (req, res) => {
-    try {
-      const vehicles = await Vehicle.findAll({ where: { ownerId: req.user.id } });
-      res.json(vehicles);
-    } catch (err) {
-      console.error(err.message);
-      res.status(500).send('Server error');
-    }
-  });
+  try {
+    const vehicles = await Vehicle.findAll({ where: { ownerId: req.user.id } });
+    res.json(vehicles);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server error');
+  }
+});
 
 // Get Single Vehicle by ID
 app.get('/vehicles/:id', authMiddleware, async (req, res) => {
-    try {
-      const vehicle = await Vehicle.findOne({ where: { id: req.params.id, ownerId: req.user.id } });
-  
-      if (!vehicle) {
-        return res.status(404).json({ msg: 'Vehicle not found' });
-      }
-  
-      res.json(vehicle);
-    } catch (err) {
-      console.error(err.message);
-      res.status(500).send('Server error');
+  try {
+    const vehicle = await Vehicle.findOne({ where: { id: req.params.id, ownerId: req.user.id } });
+
+    if (!vehicle) {
+      return res.status(404).json({ msg: 'Vehicle not found' });
     }
-  });
+
+    res.json(vehicle);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server error');
+  }
+});
 
 // Update Vehicle by ID
 app.put('/vehicles/:id', authMiddleware, async (req, res) => {
-    const { make, model, year, status, batteryLevel, location } = req.body;
-  
-    try {
-      let vehicle = await Vehicle.findOne({ where: { id: req.params.id, ownerId: req.user.id } });
-      if (!vehicle) {
-        return res.status(404).json({ msg: 'Vehicle not found' });
-      }
-  
-      // Update fields if provided
-      vehicle.make = make || vehicle.make;
-      vehicle.model = model || vehicle.model;
-      vehicle.year = year || vehicle.year;
-      vehicle.status = status || vehicle.status;
-      vehicle.batteryLevel = batteryLevel !== undefined ? batteryLevel : vehicle.batteryLevel;
-      vehicle.location = location || vehicle.location;
-  
-      await vehicle.save();
-  
-      res.json(vehicle);
-    } catch (err) {
-      console.error(err.message);
-      res.status(500).send('Server error');
+  const { make, model, year, status, batteryLevel, location } = req.body;
+
+  try {
+    let vehicle = await Vehicle.findOne({ where: { id: req.params.id, ownerId: req.user.id } });
+    if (!vehicle) {
+      return res.status(404).json({ msg: 'Vehicle not found' });
     }
-  });
+
+    // Update fields if provided
+    vehicle.make = make || vehicle.make;
+    vehicle.model = model || vehicle.model;
+    vehicle.year = year || vehicle.year;
+    vehicle.status = status || vehicle.status;
+    vehicle.batteryLevel = batteryLevel !== undefined ? batteryLevel : vehicle.batteryLevel;
+    vehicle.location = location || vehicle.location;
+
+    await vehicle.save();
+
+    // Emit 'updateVehicle' event to all connected clients
+    io.emit('updateVehicle', vehicle);
+
+    res.json(vehicle);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server error');
+  }
+});
 
 // Delete Vehicle by ID
 app.delete('/vehicles/:id', authMiddleware, async (req, res) => {
-    try {
-      const vehicle = await Vehicle.findOne({ where: { id: req.params.id, ownerId: req.user.id } });
-      if (!vehicle) {
-        return res.status(404).json({ msg: 'Vehicle not found' });
-      }
-  
-      await vehicle.destroy();
-  
-      res.json({ msg: 'Vehicle removed' });
-    } catch (err) {
-      console.error(err.message);
-      res.status(500).send('Server error');
+  try {
+    const vehicle = await Vehicle.findOne({ where: { id: req.params.id, ownerId: req.user.id } });
+    if (!vehicle) {
+      return res.status(404).json({ msg: 'Vehicle not found' });
     }
-  });
-  
+    
+    await vehicle.destroy();
+
+    // Emit 'deleteVehicle' event to all connected clients
+    io.emit('deleteVehicle', { id: req.params.id });
+
+    res.json({ msg: 'Vehicle removed' });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server error');
+  }
+});
+
+// Starting the server and connecting to the database
+const PORT = process.env.PORT || 5000;
+
+const startServer = async () => {
+  try {
+    await sequelize.authenticate();
+    console.log('Database connected successfully.');
+
+    await sequelize.sync();
+
+    // Start the server using the HTTP server
+    server.listen(PORT, () => {
+      console.log(`Server is running on port ${PORT}`);
+    });
+  } catch (error) {
+    console.error('Unable to connect to the database:', error);
+  }
+};
+
+startServer();
